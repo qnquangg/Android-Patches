@@ -1,0 +1,335 @@
+From ... Mon Sep 17 00:00:00 2001
+Date: Wed, 2 Mar 2022 15:23:04 +0700
+Subject: [PATCH] Create System UI Dialog for SystemService
+
+Description:
+    Flow: QuangService receive intent "SHOW_DIALOG" from user app, then
+broadcast intent "ACTION_SHOW_CUSTOMISING_DIALOG" to
+CustomisingDialogSystemUI, then show Dialog.
+    - Create CustomisingDialogSystemUI.java: SystemUI Service
+    - Create CustomisingDialog.java, training_customising_dialog.xml: Dialog UI
+    - Test: $ adb shell am broadcast -a "SHOW_DIALOG"
+
+Change-Id: I4163aced78b384abf08f5abdd2b09a154a1dfc2b
+---
+ .../layout/training_customising_dialog.xml    |  42 +++++++
+ packages/SystemUI/res/values/config.xml       |   1 +
+ packages/SystemUI/res/values/strings.xml      |   6 +
+ .../systemui/training/CustomisingDialog.java  | 115 ++++++++++++++++++
+ .../training/CustomisingDialogSystemUI.java   |  63 ++++++++++
+ .../android/server/Quang/QuangService.java   |  17 +++
+ 6 files changed, 244 insertions(+)
+ create mode 100644 packages/SystemUI/res/layout/training_customising_dialog.xml
+ create mode 100644 packages/SystemUI/src/com/android/systemui/training/CustomisingDialog.java
+ create mode 100644 packages/SystemUI/src/com/android/systemui/training/CustomisingDialogSystemUI.java
+
+diff --git a/packages/SystemUI/res/layout/training_customising_dialog.xml b/packages/SystemUI/res/layout/training_customising_dialog.xml
+new file mode 100644
+index 00000000..a87efaad
+--- /dev/null
++++ b/packages/SystemUI/res/layout/training_customising_dialog.xml
+@@ -0,0 +1,42 @@
++<?xml version="1.0" encoding="utf-8"?>
++<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
++    android:layout_width="wrap_content"
++    android:layout_height="wrap_content"
++    android:gravity="center"
++    android:orientation="vertical"
++    android:padding="10sp">
++
++    <TextView
++        android:id="@+id/tv_message"
++        android:layout_width="wrap_content"
++        android:layout_height="wrap_content"
++        android:padding="4sp"
++        android:text="@string/customising_dialog_msg"/>
++
++    <LinearLayout
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:gravity="center"
++        android:orientation="horizontal">
++
++        <Button
++            android:id="@+id/btn_ok"
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:text="@string/customising_dialog_ok_msg" />
++
++        <Button
++            android:id="@+id/btn_cancel"
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:text="@string/customising_dialog_cancel_msg" />
++
++    </LinearLayout>
++
++    <CheckBox
++        android:id="@+id/check_box"
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:text="@string/customising_dialog_skip_msg" />
++
++</LinearLayout>
+diff --git a/packages/SystemUI/res/values/config.xml b/packages/SystemUI/res/values/config.xml
+index 3015882d..59a13586 100644
+--- a/packages/SystemUI/res/values/config.xml
++++ b/packages/SystemUI/res/values/config.xml
+@@ -306,6 +306,7 @@
+         <item>com.android.systemui.SizeCompatModeActivityController</item>
+         <item>com.android.systemui.statusbar.notification.InstantAppNotifier</item>
+         <item>com.android.systemui.theme.ThemeOverlayController</item>
++        <item>com.android.systemui.training.CustomisingDialogSystemUI</item>
+     </string-array>
+ 
+     <!-- SystemUI vender service, used in config_systemUIServiceComponents. -->
+diff --git a/packages/SystemUI/res/values/strings.xml b/packages/SystemUI/res/values/strings.xml
+index 8f79f878..ba3ae5ee 100644
+--- a/packages/SystemUI/res/values/strings.xml
++++ b/packages/SystemUI/res/values/strings.xml
+@@ -2510,4 +2510,10 @@
++    <!-- For Description  -->
++    <string name="customising_dialog_msg">Customising Dialog Message</string>
++    <string name="customising_dialog_skip_msg">Do not show this message again</string>
++    <string name="customising_dialog_ok_msg">OK</string>
++    <string name="customising_dialog_cancel_msg">Cancel</string>
+ </resources>
+diff --git a/packages/SystemUI/src/com/android/systemui/training/CustomisingDialog.java b/packages/SystemUI/src/com/android/systemui/training/CustomisingDialog.java
+new file mode 100644
+index 00000000..8f24fd42
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/training/CustomisingDialog.java
+@@ -0,0 +1,115 @@
++package com.android.systemui.training;
++
++import android.app.Dialog;
++import android.content.Context;
++import android.graphics.PixelFormat;
++import android.os.Bundle;
++import android.util.Log;
++import android.view.KeyEvent;
++import android.view.MotionEvent;
++import android.view.View;
++import android.view.Window;
++import android.view.WindowManager;
++import android.widget.Button;
++import android.widget.CheckBox;
++import android.widget.CompoundButton;
++
++
++import com.android.systemui.R;
++
++
++public class CustomisingDialog extends Dialog implements
++        android.view.View.OnClickListener {
++
++    private static final String TAG = "CustomisingDialog";
++    private static final boolean DEBUG = true;
++
++    private Button mOKButton, mCancelButton;
++    private CheckBox mCheckBox;
++    private Context mContext;
++
++    public CustomisingDialog(Context context) {
++        super(context);
++        mContext = context;
++
++        final Window window = getWindow();
++        final WindowManager.LayoutParams lp = window.getAttributes();
++        lp.token = null;
++        lp.type = WindowManager.LayoutParams.TYPE_STATUS_BAR_PANEL;
++        lp.format = PixelFormat.TRANSLUCENT;
++        lp.setTitle(TAG);
++        window.setAttributes(lp);
++
++        window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
++
++        window.addFlags(WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
++                | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
++                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL);
++    }
++
++    @Override
++    protected void onCreate(Bundle savedInstanceState) {
++        super.onCreate(savedInstanceState);
++        requestWindowFeature(Window.FEATURE_NO_TITLE);
++        setContentView(R.layout.training_customising_dialog);
++
++        mOKButton = (Button) findViewById(R.id.btn_ok);
++        mCancelButton = (Button) findViewById(R.id.btn_cancel);
++
++        mOKButton.setOnClickListener(this);
++        mCancelButton.setOnClickListener(this);
++
++        mCheckBox = (CheckBox) findViewById(R.id.check_box);
++        mCheckBox.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
++            @Override
++            public void onCheckedChanged(CompoundButton compoundButton, boolean b) {
++                if (compoundButton.isChecked()) {
++                    if (DEBUG) Log.d(TAG, "mCheckBox isChecked: true");
++                } else {
++                    if (DEBUG) Log.d(TAG, "mCheckBox isChecked: false");
++                }
++            }
++        });
++
++        setCanceledOnTouchOutside(false);
++    }
++
++    @Override
++    public void onClick(View v) {
++        if (v.getId() == R.id.btn_ok) {
++            if (DEBUG) Log.d(TAG, "onClick() btn_ok");
++            // do something
++
++        } else if (v.getId() == R.id.btn_cancel) {
++            if (DEBUG) Log.d(TAG, "onClick() btn_cancel");
++            // do something
++            
++        }
++
++        dismiss();
++    }
++
++    @Override
++    public boolean onKeyUp(int keyCode, KeyEvent event) {
++        switch(keyCode) {
++            case KeyEvent.KEYCODE_BACK:
++                if (DEBUG) Log.d(TAG, "onKeyUp() KEYCODE_BACK");
++                dismiss();
++                return true;
++
++            default:
++                return super.onKeyUp(keyCode, event);
++        }
++    }
++
++    @Override
++    public boolean onTouchEvent(MotionEvent event) {
++        if (event.getAction() == MotionEvent.ACTION_OUTSIDE) {
++            if (DEBUG) Log.d(TAG, "onTouchEvent() ACTION_OUTSIDE");
++            dismiss();
++            return false;
++        }
++
++        return super.onTouchEvent(event);
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/training/CustomisingDialogSystemUI.java b/packages/SystemUI/src/com/android/systemui/training/CustomisingDialogSystemUI.java
+new file mode 100644
+index 00000000..c2e4d628
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/training/CustomisingDialogSystemUI.java
+@@ -0,0 +1,63 @@
++package com.android.systemui.training;
++
++import android.app.Activity;
++import android.app.ActivityOptions;
++import android.content.BroadcastReceiver;
++import android.content.ContentResolver;
++import android.content.Context;
++import android.content.Intent;
++import android.content.IntentFilter;
++import android.database.ContentObserver;
++import android.net.Uri;
++import android.os.Handler;
++import android.os.UserHandle;
++import android.provider.Settings;
++import android.util.Log;
++
++import com.android.systemui.SystemUI;
++
++import org.json.JSONException;
++import org.json.JSONObject;
++import android.os.Message;
++
++import android.view.Display;
++
++public class CustomisingDialogSystemUI extends SystemUI {
++
++    public static final String TAG = "CustomisingDialogSystemUI";
++    public static final String ACTION_SHOW_CUSTOMISING_DIALOG = "ACTION_SHOW_CUSTOMISING_DIALOG";
++    public static final boolean DEBUG = true;
++
++    BroadcastReceiver mTransitionDialogReceiver = new BroadcastReceiver() {
++        @Override
++        public void onReceive(Context context, Intent intent) {
++            if (ACTION_SHOW_CUSTOMISING_DIALOG.equals(intent.getAction())) {
++                showCustomisingDialog();
++            }
++        }
++    };
++
++    @Override
++    protected void onBootCompleted() {
++        if (mContext == null) {
++            Log.w(TAG, "mContext is NULL");
++            return;
++        }
++    }
++
++    @Override
++    public void start() {
++        if (DEBUG) Log.d(TAG, "Start CustomisingDialogSystemUI");
++
++        // Register BroadcastReceiver
++        IntentFilter filter = new IntentFilter();
++        filter.addAction(ACTION_SHOW_CUSTOMISING_DIALOG);
++        Intent intent = mContext.registerReceiver(mTransitionDialogReceiver, filter);
++    }
++
++    private void showCustomisingDialog() {
++        if (DEBUG) Log.d(TAG, "showCustomisingDialog");
++        CustomisingDialog dialog = new CustomisingDialog(mContext);
++        dialog.show();
++    }
++}
+diff --git a/services/core/java/com/android/server/Quang/QuangService.java b/services/core/java/com/android/server/Quang/QuangService.java
+index e7de2acb..0a7a4e66 100644
+--- a/services/core/java/com/android/server/Quang/QuangService.java
++++ b/services/core/java/com/android/server/Quang/QuangService.java
+@@ -26,6 +26,7 @@ import android.app.Activity;
+ import android.app.ActivityManager.StackInfo;
+ import android.app.ActivityOptions;
+ import android.app.ActivityTaskManager;
+ import android.app.IActivityTaskManager;
+ import android.app.ActivityManager;
+ import android.content.BroadcastReceiver;
+@@ -64,6 +65,7 @@ public class QuangService extends SystemService implements DisplayManager.Disp
+     private static final boolean DEBUG = true;
+ 
++    private static final String SHOW_DIALOG = "SHOW_DIALOG";
+ 
+@@ -78,6 +80,8 @@ public class QuangService extends SystemService implements DisplayManager.Disp
+ 
++    private static final String ACTION_SHOW_CUSTOMISING_DIALOG = "ACTION_SHOW_CUSTOMISING_DIALOG";
++
+@@ -156,6 +160,13 @@ public class QuangService extends SystemService implements DisplayManager.Disp
+                     }
+                 }
+             }
++            else if (intent.getAction().equals(SHOW_DIALOG)) {
++                synchronized (mLock) {
++                    if (DEBUG) Slog.i(TAG, "SHOW_DIALOG");
++                    showDialog();
++                }
++            }
++
+         }
+     };
+ 
+@@ -305,6 +316,7 @@ public class QuangService extends SystemService implements DisplayManager.Disp
++        filter.addAction(SHOW_DIALOG);
+         mContext.registerReceiver(mIntentReceiver, filter);
+ 
+ 
+@@ -604,4 +616,9 @@ public class QuangService extends SystemService implements DisplayManager.Disp
++
++    private void showDialog() {
++        Intent intent = new Intent(ACTION_SHOW_CUSTOMISING_DIALOG);
++        mContext.sendBroadcast(intent);
++    }
+ }
+-- 
+2.25.1
+
